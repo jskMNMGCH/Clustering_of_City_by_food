@@ -1,0 +1,250 @@
+---
+title: "Report"
+date: "`r Sys.Date()`"
+format:
+    html: 
+      toc: true
+      html-math-method: katex
+      self-contained: true
+      grid: 
+        margin-width: 350px
+execute: 
+  echo: true
+  warning: false
+reference-location: margin
+citation-location: margin
+tbl-cap-location: margin
+fig-cap-location: margin
+editor: visual
+editor_options: 
+  chunk_output_type: inline
+---
+
+## 課題内容
+
+興味のある実データを適切な方法で収集し，\
+検討したい仮説に合致した多変量解析の手法を選択して分析を行いなさい．
+
+## 動機と背景
+
+各地域でどの食品の消費量が多いかなどを可視化することで，地域ごとの食文化の多様性を把握しようと考え食品ごとの家計消費量を表すデータを用いた．
+
+具体的には，独立行政法人統計データセンターのSSDSE-家計消費（SSDSE-C) の項目(<https://www.nstac.go.jp/use/literacy/ssdse/#SSDSE-C>)から都道府県庁所在市別の家計消費データをを取得した． 集めたデータセットの食品の中分類("01　穀類", "02　魚介類", "03　肉類", "04　乳卵類", "05　野菜・海藻", "06　果物")によって各県庁所在地をクラスタリングすることでそれぞれの地域の特徴を可視化した．
+
+## 検証すべき仮説
+
+食料品の消費データによってそれぞれの地域（県庁所在地）を効率的に分類できるという仮説．
+
+## 分析手法
+
+```{r}
+library(conflicted) # 関数名の衝突を警告
+conflicts_prefer(   # 優先的に使う関数を指定
+    dplyr::filter(),
+    dplyr::select(),
+    dplyr::lag(),
+    )
+library(tidyverse)  
+library(GGally)
+library(broom)      # 解析結果を tibble 形式に集約
+library(ggfortify)
+library(cluster)
+library(ggdendro)
+#' macOSのための日本語表示の設定
+if(Sys.info()["sysname"] == "Darwin") { # macOSか調べる
+    theme_update(text = element_text(family = "HiraMaruProN-W4"))
+    label_family <- "HiraMaruProN-W4"
+} else {label_family <- NULL}
+```
+
+SSDSE-C-2024.csvから家計消費のデータを読み込んだ．\
+そのうちの，中分類 "01　穀類", "02　魚介類", "03　肉類", "04　乳卵類", "05　野菜・海藻", "06　果物" のみを取得し，データフレームとした．
+
+```{r}
+data <- read_csv(file="data/SSDSE-C-2024.csv", locale = locale(encoding = "Shift-JIS"), skip = 1,)
+food_df <- data |> column_to_rownames(var="市")|>select("01　穀類", "02　魚介類", "03　肉類", "04　乳卵類", "05　野菜・海藻", "06　果物")
+food_df <- food_df[-1, ]
+food_df
+```
+
+次に県庁所在地ごとの距離を計算し，クラスタ間距離を群平均法により定義した．
+
+```{r}
+food_agnes_euc_StandF <- agnes(food_df,
+                      metric="euclidean", # データ距離
+                      stand=FALSE,	    # 標準化
+                      method="average")   # クラスタ距離
+food_agnes_man_StandF <- agnes(food_df,
+                      metric="manhattan", # データ距離
+                      stand=FALSE,	    # 標準化
+                      method="average")   # クラスタ距離
+food_agnes_euc_StandT <- agnes(food_df,
+                      metric="euclidean", # データ距離
+                      stand=TRUE,	    # 標準化
+                      method="average")   # クラスタ距離
+food_agnes_man_StandT <- agnes(food_df,
+                      metric="manhattan", # データ距離
+                      stand=TRUE,	    # 標準化
+                      method="average")   # クラスタ距離
+food_agnes_euc_StandF[["ac"]]
+food_agnes_euc_StandT[["ac"]]
+food_agnes_man_StandF[["ac"]]
+food_agnes_man_StandT[["ac"]]
+```
+
+## 分析結果の整理
+
+以下に各県庁所在地の食品カテゴリの比率を表示した．
+
+```{r}
+food_long <- food_df %>%
+  rownames_to_column(var = "市") %>% # 行名を列に変換
+  pivot_longer(cols = starts_with("0"), 
+               names_to = "食品カテゴリ", 
+               values_to = "値")
+
+# 各市ごとの比率を計算
+food_long <- food_long %>%
+  group_by(市) %>%
+  mutate(比率 = 値 / sum(値)) %>% # 比率を計算
+  ungroup()
+
+# 比率を示す棒グラフを作成
+ggplot(food_long, aes(x = 比率, y = 市, fill = 食品カテゴリ)) +
+  geom_bar(stat = "identity", 
+           position = position_stack(reverse=TRUE)) +
+  labs(title = "各県庁所在地の食品カテゴリの比率",
+       x = "比率",
+       y = "市",
+       fill = "食品カテゴリ", label.family = label_family) +
+  theme_minimal(base_family =label_family) +
+  theme(axis.text.x = element_text(angle = 0,size=8),
+        axis.text.y = element_text(angle = 0, size=4))
+```
+
+デンドログラムは以下のようになった．
+
+```{r}
+food_agnes_man_StandF |> as.dendrogram() |>  
+    ggdendrogram(rotate = FALSE, # 横向きにしない
+                 theme_dendro = FALSE) + # 'TRUE'とすれば無地
+    labs(title = "Manhattan + Average",
+         x = "City", y = "Height") +
+    theme(axis.text.x = element_text(size = 6),
+          axis.text.y = element_text(size = 9))
+```
+
+凝縮係数の観点では，マンハッタン距離で標準化を行わず，クラスタリングするのが最も適切であった．
+
+```{r}
+food_agnes_man_StandF |> as.dendrogram() |>  
+    ggdendrogram(rotate = TRUE, # 横向きにする
+                 theme_dendro = FALSE) + # 'TRUE'とすれば無地
+    labs(title = "Manhattan + Average",
+         x = "Height", y = "City") +
+    theme(axis.text.x = element_text(size = 6),
+          axis.text.y = element_text(size = 3))
+```
+
+分割数を7としてクラスタリングを行った．第一，第二主成分のグラフについて表示した．
+
+以下のように日本の県庁所在地を食料品("01　穀類", "02　魚介類", "03　肉類", "04　乳卵類", "05　野菜・海藻", "06　果物")の消費量によって分類することができた．
+
+```{r}
+k <- 4 # 分割数を指定
+food_clust <- cutree(food_agnes_man_StandF, k = k) # デンドログラムを分割
+food_df |>
+    prcomp() |>
+    autoplot(data = tibble(cluster = factor(food_clust)),
+             colour = 'cluster',
+             frame = TRUE,
+             frame.type = "convex", # 各クラスタを正規分布で近似して補助線を描く
+             label = TRUE,
+             label.repel = TRUE,
+             label.size = 3,
+             label.family = label_family,
+             label.show.legend = FALSE)
+```
+
+```{r}
+for(k in 4:9) {
+    foo <- pam(food_df, k = k)
+    p <- foo |>
+        silhouette() |>
+        autoplot() +
+        labs(title = paste("k =", k, "(Silhouette coef. =",
+                           round(foo$silinfo$avg.width, digits = 3), ")"))
+    print(p) 
+}
+```
+
+那覇市が外れ値としてクラスタリングの結果に影響を与えたかどうかを調べるために，那覇市のデータを除いたデータフレームについて同じ手法でクラスタリングを行った．
+
+```{r}
+data <- read_csv(file="data/SSDSE-C-2024.csv", locale = locale(encoding = "Shift-JIS"), skip = 1,)
+food_df <- data |> column_to_rownames(var="市")|>select("01　穀類", "02　魚介類", "03　肉類", "04　乳卵類", "05　野菜・海藻", "06　果物")
+food_df <- food_df %>% slice(-1, -n())
+food_df
+```
+
+```{r}
+food_agnes_euc_StandF <- agnes(food_df,
+                      metric="euclidean", # データ距離
+                      stand=FALSE,	    # 標準化
+                      method="average")   # クラスタ距離
+food_agnes_man_StandF <- agnes(food_df,
+                      metric="manhattan", # データ距離
+                      stand=FALSE,	    # 標準化
+                      method="average")   # クラスタ距離
+food_agnes_euc_StandT <- agnes(food_df,
+                      metric="euclidean", # データ距離
+                      stand=TRUE,	    # 標準化
+                      method="average")   # クラスタ距離
+food_agnes_man_StandT <- agnes(food_df,
+                      metric="manhattan", # データ距離
+                      stand=TRUE,	    # 標準化
+                      method="average")   # クラスタ距離
+food_agnes_euc_StandF[["ac"]]
+food_agnes_euc_StandT[["ac"]]
+food_agnes_man_StandF[["ac"]]
+food_agnes_man_StandT[["ac"]]
+```
+
+```{r}
+food_agnes_man_StandF |> as.dendrogram() |>  
+    ggdendrogram(rotate = FALSE, # 横向きにしない
+                 theme_dendro = FALSE) + # 'TRUE'とすれば無地
+    labs(title = "Manhattan + Average",
+         x = "City", y = "Height") +
+    theme(axis.text.x = element_text(size = 6),
+          axis.text.y = element_text(size = 9))
+
+```
+
+```{r}
+k <- 3 # 分割数を指定
+food_clust <- cutree(food_agnes_man_StandF, k = k) # デンドログラムを分割
+food_df |>
+    prcomp() |>
+    autoplot(data = tibble(cluster = factor(food_clust)),
+             colour = 'cluster',
+             frame = TRUE,
+             frame.type = "convex", # 各クラスタを正規分布で近似して補助線を描く
+             label = TRUE,
+             label.repel = TRUE,
+             label.size = 3,
+             label.family = label_family,
+             label.show.legend = FALSE)
+```
+
+```{r}
+for(k in 3:8) {
+    foo <- pam(food_df, k = k)
+    p <- foo |>
+        silhouette() |>
+        autoplot() +
+        labs(title = paste("k =", k, "(Silhouette coef. =",
+                           round(foo$silinfo$avg.width, digits = 3), ")"))
+    print(p) 
+}
+```
